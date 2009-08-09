@@ -17,7 +17,6 @@
 AC_INIT(OpenSSH, Portable, openssh-unix-dev@mindrot.org)
 AC_REVISION($Revision: 1.397 $)
 AC_CONFIG_SRCDIR([pam_ssh_agent_auth.c])
-AC_DEFINE([HAVE_BUNDLE], [], [Thingies])
 
 AC_CONFIG_HEADER(config.h)
 AC_PROG_CC
@@ -72,7 +71,7 @@ AC_TYPE_SIGNAL
 AC_FUNC_STAT
 AC_FUNC_STRNLEN
 AC_FUNC_UTIME_NULL
-AC_CHECK_FUNCS([dup2 endgrent ftruncate getcwd gethostbyaddr gethostbyname getpass getspnam gettimeofday inet_ntoa isascii memmove memset mkdir realpath rmdir select setenv socket strcasecmp strchr strdup strerror strncasecmp strpbrk strrchr strspn strstr strtol strtoul uname utime strnlen])
+AC_CHECK_FUNCS([dup2 endgrent ftruncate getcwd gethostbyaddr gethostbyname getpass getspnam gettimeofday inet_ntoa isascii memmove memset mkdir realpath rmdir select setenv socket strcasecmp strchr strdup strerror strncasecmp strpbrk strrchr strspn strstr strtol strtoul uname utime strnlen gethostname])
 
 
 # System features
@@ -109,6 +108,18 @@ AC_SUBST(LD)
 AC_C_INLINE
 
 AC_CHECK_DECL(LLONG_MAX, have_llong_max=1, , [#include <limits.h>])
+
+enable_sudo_hack=1
+AC_ARG_ENABLE(sudo-hack,
+            [  --disable-sudo-hack     Disable using SUDO_USER from the environment
+                          when PAM_SERVICE is sudo and PAM_RUSER is null ], [
+             if test "x$withval" = "xno"; then 
+                 enable_sudo_hack=0
+             fi ])
+
+if test "$enable_sudo_hack" -eq "1"; then 
+    AC_DEFINE(ENABLE_SUDO_HACK, 1, [enable sudo hack])
+fi
 
 use_stack_protector=1
 AC_ARG_WITH(stackprotect,
@@ -198,6 +209,7 @@ AC_ARG_WITH(rpath,
 		fi
 	]
 )
+
 
 # Allow user to specify flags
 AC_ARG_WITH(cflags,

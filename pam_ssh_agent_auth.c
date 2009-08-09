@@ -60,35 +60,40 @@
 #include "log.h"
 #include "ssh.h"
 #include "pam_static_macros.h"
-//#include "secure_filename.h"
 #include "pam_user_authorized_keys.h"
 
 
-char * authorized_keys_file = NULL;
-uint8_t allow_user_owned_authorized_keys_file = 0;
+char           *authorized_keys_file = NULL;
+uint8_t         allow_user_owned_authorized_keys_file = 0;
 
 #if ! HAVE___PROGNAME || HAVE_BUNDLE
-char * __progname;
+char           *__progname;
 #else
-extern char * __progname;
+extern char    *__progname;
 #endif
 
-PAM_EXTERN int 
-pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) 
+PAM_EXTERN int
+pam_sm_authenticate(pam_handle_t * pamh, int flags, int argc, const char **argv)
 {
-    const char * user = NULL;
-    char ** v; 
-    int i = 0;
-    int retval = PAM_AUTH_ERR;
-    char * authorized_keys_file_input = NULL;
-    uid_t caller_uid = 0;
-    LogLevel log_lvl = SYSLOG_LEVEL_INFO;
-#ifdef SYSLOG_FACILITY_AUTHPRIV
-    SyslogFacility facility = SYSLOG_FACILITY_AUTHPRIV;
-#else
-    SyslogFacility facility = SYSLOG_FACILITY_AUTH;
+    char          **argv_ptr;
+    const char     *user = NULL;
+    char           *ruser_ptr = NULL;
+    char           *servicename = NULL;
+    char           *authorized_keys_file_input = NULL;
+    char            sudo_service_name[128] = "sudo";
+    char            ruser[128] = "";
+
+    int             i = 0;
+    int             retval = PAM_AUTH_ERR;
+
+    LogLevel        log_lvl = SYSLOG_LEVEL_INFO;
+    SyslogFacility  facility = SYSLOG_FACILITY_AUTH;
+
+#ifdef LOG_AUTHPRIV 
+    facility = SYSLOG_FACILITY_AUTHPRIV;
 #endif
 
+    pam_get_item(pamh, PAM_SERVICE, (void *) &servicename);
 /*
  * XXX: 
  * When testing on MacOS (and I presume them same would be true on other a.out systems)
@@ -98,54 +103,81 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
  * a patch 8-)
  */
 #if ! HAVE___PROGNAME || HAVE_BUNDLE
-    char * servicename;
-    pam_get_item(pamh, PAM_SERVICE, (void *) &servicename);
-    
-    __progname = calloc(1,1024);
-    strncpy(__prognam,servicename,1024);
+    __progname = xstrdup(servicename);
 #endif
 
-    for (i=argc,v=(char **) argv; i > 0; ++v, i--) {
-        if (strncasecmp(*v, "debug", strlen("debug")) == 0) {
+    for(i = argc, argv_ptr = (char **) argv; i > 0; ++argv_ptr, i--) {
+        if(strncasecmp(*argv_ptr, "debug", strlen("debug")) == 0) {
             log_lvl = SYSLOG_LEVEL_DEBUG3;
         }
-        if ( strncasecmp(*v, "file=", strlen("file=")) == 0 ) {
-            authorized_keys_file_input = *v+strlen("file=");
+        if(strncasecmp(*argv_ptr, "allow_user_owned_authorized_keys_file", strlen("allow_user_owned_authorized_keys_file")) == 0) {
+            allow_user_owned_authorized_keys_file = 1;
         }
+        if(strncasecmp(*argv_ptr, "file=", strlen("file=")) == 0) {
+            authorized_keys_file_input = *argv_ptr + strlen("file=");
+        }
+#ifdef ENABLE_SUDO_HACK
+        if(strncasecmp(*argv_ptr, "sudo_service_name=", strlen("sudo_service_name=")) == 0) {
+            strncpy( sudo_service_name, *argv_ptr + strlen("sudo_service_name="), 127 );
+        }
+#endif
     }
 
     log_init(__progname, log_lvl, facility, 0);
     pam_get_item(pamh, PAM_USER, (void *) &user);
+    pam_get_item(pamh, PAM_RUSER, (void *) &ruser_ptr);
 
-    allow_user_owned_authorized_keys_file = 0;
-    if(authorized_keys_file_input && user) {
-        authorized_key_file_translate( user, authorized_keys_file_input );
-    }
-    else {
-        verbose("Using default file=/etc/security/authorized_keys");
-        authorized_keys_file = calloc(1,strlen("/etc/security/authorized_keys") + 1);
-        strcpy(authorized_keys_file, "/etc/security/authorized_keys");
-    }
-
-    if(user) {
-        verbose("Authorized keys file = %s", authorized_keys_file);
-
-        /* 
-         * PAM_USER does not necessarily have to get set by the calling application. 
-         * In those cases we should silently fail 
+    if(ruser_ptr) {
+        strncpy(ruser, ruser_ptr, 127);
+    } else {
+        /*
+         * XXX: XXX: XXX: XXX: XXX: XXX: XXX: XXX: XXX:
+         * This is a kludge to address a bug in sudo wherein PAM_RUSER is left unset at the time 
+         * pam_authenticate is called, and so we cannot reliably know who invoked the process except
+         * via the SUDO_USER environment variable. I've submitted a patch to sudo which fixes this,
+         * and so this should not be enabled with versions of sudo which contain it. 
          */
-
-        caller_uid = getpwnam(user)->pw_uid;
-
-        if(find_authorized_keys(caller_uid)) {
-            logit("Authenticated: user %s via ssh-agent using %s", user, authorized_keys_file);
-            retval = PAM_SUCCESS;
+#ifdef ENABLE_SUDO_HACK
+        if( (strlen(sudo_service_name) > 0) && strncasecmp(servicename, sudo_service_name, strlen(sudo_service_name)) == 0 && getenv("SUDO_USER") ) {
+            strncpy(ruser, getenv("SUDO_USER"), 127);
+            verbose( "Using environment variable SUDO_USER (%s)", ruser );
+        } else 
+#endif
+        {
+            strncpy(ruser, getpwuid(getuid())->pw_name, 127);
         }
     }
-    else {
-        logit("No user specified, cannot continue with this form of authentication");
+
+    if(authorized_keys_file_input && user) {
+        /*
+         * user is the name of the target-user, and so must be used for validating the authorized_keys file
+         */
+        parse_authorized_key_file(user, authorized_keys_file_input);
+    } else {
+        verbose("Using default file=/etc/security/authorized_keys");
+        authorized_keys_file = xstrdup("/etc/security/authorized_keys");
     }
 
+    /* 
+     * PAM_USER and PAM_RUSER do not necessarily have to get set by the calling application, and we may be unable to divine the latter.
+     * In those cases we should fail
+     */
+
+    if(user && strlen(ruser) > 0) {
+        verbose("Attempting authentication: `%s' as `%s' using %s", ruser, user, authorized_keys_file);
+
+        /* 
+         * this pw_uid is used to validate the SSH_AUTH_SOCK, and so must be the uid of the ruser invoking the program, not the target-user
+         */
+        if(find_authorized_keys(getpwnam(ruser)->pw_uid)) {
+            logit("Authenticated: `%s' as `%s' using %s", ruser, user, authorized_keys_file);
+            retval = PAM_SUCCESS;
+        } else {
+            logit("Failed Authentication: `%s' as `%s' using %s", ruser, user, authorized_keys_file);
+        }
+    } else {
+        logit("No %s specified, cannot continue with this form of authentication", (user) ? "ruser" : "user" );
+    }
 #if ! HAVE___PROGNAME || HAVE_BUNDLE
     free(__progname);
 #endif
@@ -154,10 +186,10 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
 
     return retval;
 }
-    
 
-PAM_EXTERN int 
-pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
+
+PAM_EXTERN int
+pam_sm_setcred(pam_handle_t * pamh, int flags, int argc, const char **argv)
 {
     return PAM_SUCCESS;
 }
@@ -173,4 +205,3 @@ struct pam_module _pam_ssh_agent_auth_modstruct = {
     NULL,
 };
 #endif
-

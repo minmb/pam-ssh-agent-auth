@@ -51,17 +51,17 @@
 #include "identity.h"
 #include "pam_user_authorized_keys.h"
 
-extern u_char *session_id2;
-extern uint8_t session_id2_len;
+extern u_char  *session_id2;
+extern uint8_t  session_id_len;
 
 int
-userauth_pubkey_from_id(Identity * id, uid_t uid)
+userauth_pubkey_from_id(Identity * id)
 {
-	Buffer b;
-	char * pkalg = NULL;
-	u_char *pkblob = NULL, *sig = NULL;
-	u_int blen = 0, slen = 0;
-	int authenticated = 0;
+    Buffer          b = { 0 };
+    char           *pkalg = NULL;
+    u_char         *pkblob = NULL, *sig = NULL;
+    u_int           blen = 0, slen = 0;
+    int             authenticated = 0;
 
     pkalg = (char *) key_ssh_name(id->key);
 
@@ -71,7 +71,7 @@ userauth_pubkey_from_id(Identity * id, uid_t uid)
     /* construct packet to sign and test */
     buffer_init(&b);
 
-    buffer_put_string(&b, session_id2, session_id2_len);
+    buffer_put_string(&b, session_id2, session_id_len);
     buffer_put_char(&b, SSH2_MSG_USERAUTH_REQUEST);
     buffer_put_cstring(&b, "root");
     buffer_put_cstring(&b, "ssh-userauth");
@@ -83,16 +83,17 @@ userauth_pubkey_from_id(Identity * id, uid_t uid)
     if(ssh_agent_sign(id->ac, id->key, &sig, &slen, buffer_ptr(&b), buffer_len(&b)) != 0)
         goto user_auth_clean_exit;
 
-	/* test for correct signature */
-    if (pam_user_key_allowed(id->key,uid) && key_verify(id->key, sig, slen, buffer_ptr(&b), buffer_len(&b)) == 1)
+    /* test for correct signature */
+    if(pam_user_key_allowed(id->key) && key_verify(id->key, sig, slen, buffer_ptr(&b), buffer_len(&b)) == 1)
         authenticated = 1;
 
-user_auth_clean_exit:
+  user_auth_clean_exit:
     if(&b != NULL)
         buffer_free(&b);
     if(sig != NULL)
         xfree(sig);
     if(pkblob != NULL)
         xfree(pkblob);
-	return authenticated;
+    CRYPTO_cleanup_all_ex_data();
+    return authenticated;
 }
